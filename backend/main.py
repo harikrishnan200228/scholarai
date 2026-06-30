@@ -9,9 +9,13 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from database import save_search, init_db
 
+from features.whatsapp_bot import router as whatsapp_router
+from features.outcome_tracking import router as outcome_router, init_outcomes_table
+from features.email_reminders import save_subscription
+
 load_dotenv()
 
-app = FastAPI(title="ScholarAI API", version="1.0.0")
+app = FastAPI(title="ScholarAI API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,6 +24,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(whatsapp_router, tags=["WhatsApp"])
+app.include_router(outcome_router, tags=["Outcomes"])
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_FILE = BASE_DIR / "data" / "scholarships.json"
@@ -35,15 +42,18 @@ print(f"✅ Loaded {len(SCHOLARSHIPS)} scholarships")
 API_KEY = os.getenv("GROK_API_KEY")
 print(f"Grok API Key set: {'YES - ' + API_KEY[:12] + '...' if API_KEY else 'NO - CHECK .env FILE!'}")
 
-# Grok uses OpenAI-compatible API
 client = OpenAI(
     api_key=API_KEY,
     base_url="https://api.x.ai/v1",
 )
 
+
 @app.on_event("startup")
 def startup():
     init_db()
+    init_outcomes_table()
+    print("✅ All database tables ready")
+
 
 class StudentProfile(BaseModel):
     name: str
@@ -54,14 +64,18 @@ class StudentProfile(BaseModel):
     category: str = ""
     state: str = ""
     interests: str = ""
+    email: str = ""
+
 
 @app.get("/")
 def root():
     return {"message": "ScholarAI API running", "scholarships": len(SCHOLARSHIPS)}
 
+
 @app.get("/health")
 def health():
     return {"status": "ok", "scholarships": len(SCHOLARSHIPS)}
+
 
 @app.post("/find-scholarships")
 async def find_scholarships(profile: StudentProfile):
@@ -88,6 +102,14 @@ async def find_scholarships(profile: StudentProfile):
                         result.get("total_funding", ""))
         except:
             pass
+
+        # Auto-subscribe to deadline reminders if email was provided
+        if profile.email:
+            for m in result.get("matches", [])[:3]:
+                try:
+                    save_subscription(profile.email, profile.name, m)
+                except:
+                    pass
 
         return result
 
